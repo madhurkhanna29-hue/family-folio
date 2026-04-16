@@ -2,9 +2,10 @@ import streamlit as st
 import yfinance as yf
 import pandas as pd
 import plotly.express as px
+from datetime import datetime
 
 # Set Page Config for Mobile
-st.set_page_config(page_title="FamilyFolio", layout="wide")
+st.set_page_config(page_title="FamilyFolio Pro", layout="wide")
 
 # --- 1. DATASET ---
 PORTFOLIO_DATA = {
@@ -15,62 +16,102 @@ PORTFOLIO_DATA = {
     "Father (acc6)": [{"sym": "SUNPHARMA.NS", "qty": 7, "avg": 352.20, "cur": "INR", "sec": "Pharma"}, {"sym": "NELCO.NS", "qty": 100, "avg": 134.50, "cur": "INR", "sec": "Technology"}, {"sym": "DLF.NS", "qty": 50, "avg": 137.50, "cur": "INR", "sec": "Real Estate"}, {"sym": "GUJGASLTD.NS", "qty": 2005, "avg": 232.60, "cur": "INR", "sec": "Utilities"}, {"sym": "ELECON.NS", "qty": 100, "avg": 178.48, "cur": "INR", "sec": "Industrials"}, {"sym": "MOLDTECH.NS", "qty": 103, "avg": 247.45, "cur": "INR", "sec": "Industrials"}, {"sym": "ASTRAL.NS", "qty": 33, "avg": 1559, "cur": "INR", "sec": "Materials"}]
 }
 
-# --- 2. LOGIC ---
-st.title("👨‍👩‍👧‍👦 FamilyFolio Dashboard")
+# --- 2. LOGIC & CACHING ---
+st.title("👨‍👩‍👧‍👦 FamilyFolio Pro Dashboard")
 
-@st.cache_data(ttl=600) # Cache data for 10 minutes
-def get_market_data():
+selection = st.sidebar.selectbox("Active View", ["Combined"] + list(PORTFOLIO_DATA.keys()))
+timeframe = st.sidebar.selectbox("Performance Timeframe", ["5d", "1mo", "6mo", "1y", "YTD", "max"], index=3)
+
+@st.cache_data(ttl=3600)
+def get_historical_data(tf):
     all_syms = list(set([h['sym'] for acc in PORTFOLIO_DATA.values() for h in acc]))
     
-    # We fetch '2d' to ensure we have the previous close if today is empty
-    data = yf.download(all_syms, period="2d", interval="1d")['Close']
-    
-    # Logic: Take the latest non-null price for every stock
-    # This fills the "Today" gap with "Yesterday's" price for closed markets
-    latest_prices = data.ffill().iloc[-1]
+    # Calculate YTD start if needed
+    if tf == "YTD":
+        start_date = f"{datetime.now().year}-01-01"
+        hist = yf.download(all_syms, start=start_date)['Close']
+    else:
+        hist = yf.download(all_syms, period=tf)['Close']
+        
+    hist = hist.ffill().bfill()
     
     fx = yf.download(["USDINR=X", "GBPINR=X", "EURINR=X"], period="1d")['Close'].iloc[-1]
     rates = {"USD": fx["USDINR=X"], "GBP": fx["GBPINR=X"], "EUR": fx["EURINR=X"], "INR": 1.0}
-    
-    return latest_prices, rates
+    return hist, rates
 
 try:
-    prices, rates = get_market_data()
-    selection = st.sidebar.selectbox("Select Account", ["Combined"] + list(PORTFOLIO_DATA.keys()))
+    hist, rates = get_historical_data(timeframe)
+    latest_prices = hist.iloc[-1]
     
+    # Process Current State
     rows = []
-    for acc, holdings in PORTFOLIO_DATA.items():
-        if selection == "Combined" or selection == acc:
-            for h in holdings:
-                ltp = prices[h['sym']]
-                inr_rate = rates["GBP"] if h['cur'] == "GBP_PENCE" else rates[h['cur']]
-                
-                # Correct Pence logic
-                cur_ltp = ltp/100 if h['cur'] == "GBP_PENCE" else ltp
-                
-                val_inr = h['qty'] * cur_ltp * inr_rate
+    performance_map = {} # Store normalized series for each account
+
+    # 1. Calculate Individual & Combined Performance Series
+    for acc_name, holdings in PORTFOLIO_DATA.items():
+        acc_daily_val = pd.Series(0, index=hist.index)
+        
+        for h in holdings:
+            inr_rate = rates["GBP"] if h['cur'] == "GBP_PENCE" else rates[h['cur']]
+            
+            # Timeseries for chart
+            p_series = hist[h['sym']]
+            if h['cur'] == "GBP_PENCE": p_series = p_series / 100
+            acc_daily_val += (p_series * h['qty'] * inr_rate)
+            
+            # Metrics for current selection
+            if selection == "Combined" or selection == acc_name:
+                ltp = latest_prices[h['sym']]
+                cur_p = ltp/100 if h['cur'] == "GBP_PENCE" else ltp
+                val_inr = h['qty'] * cur_p * inr_rate
                 inv_inr = h['qty'] * h['avg'] * inr_rate
                 pnl = val_inr - inv_inr
-                
-                rows.append({
-                    "Account": acc, "Symbol": h['sym'], "Sector": h['sec'],
-                    "Value (INR)": val_inr, "P&L": pnl, 
-                    "Gain %": (pnl/inv_inr*100) if inv_inr != 0 else 0
-                })
+                rows.append({"Account": acc_name, "Symbol": h['sym'], "Sector": h['sec'], "Value (INR)": val_inr, "P&L": pnl, "Gain %": (pnl/inv_inr*100) if inv_inr != 0 else 0})
+        
+        # Normalize account series to Base 100
+        performance_map[acc_name] = (acc_daily_val / acc_daily_val.iloc[0]) * 100
+
+    # Create Combined series
+    combined_val = sum(performance_map.values()) / len(performance_map) # Simple average for trend
+    performance_map["Combined"] = (combined_val / combined_val.iloc[0]) * 100
     
     df = pd.DataFrame(rows)
 
-    # UI Metrics
-    col1, col2 = st.columns(2)
-    col1.metric("Total Value", f"₹{df['Value (INR)'].sum():,.0f}")
-    col2.metric("Total P&L", f"₹{df['P&L'].sum():,.0f}", f"{df['P&L'].sum()/(df['Value (INR)'].sum()-df['P&L'].sum())*100:.2f}%")
+    # --- 3. UI RENDERING ---
+    
+    # Top Metrics
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Total Value", f"₹{df['Value (INR)'].sum():,.0f}")
+    c2.metric("P&L", f"₹{df['P&L'].sum():,.0f}")
+    c3.metric("Acc. Return", f"{(df['P&L'].sum()/(df['Value (INR)'].sum()-df['P&L'].sum())*100):.2f}%")
 
-    # Sunburst Chart
-    fig = px.sunburst(df, path=['Account', 'Sector', 'Symbol'], values='Value (INR)',
-                      color='Gain %', color_continuous_scale='RdYlGn', range_color=[-15, 15])
-    st.plotly_chart(fig, use_container_width=True)
+    # --- PERFORMANCE CHART (Base 100) ---
+    st.subheader(f"Relative Performance Index ({timeframe})")
+    
+    if selection == "Combined":
+        # Show all accounts as separate lines
+        plot_df = pd.DataFrame(performance_map)
+        fig_line = px.line(plot_df, labels={"value": "Index (Base 100)", "index": "Date"})
+    else:
+        # Show only selected account vs Combined Benchmark
+        plot_df = pd.DataFrame({selection: performance_map[selection], "Combined": performance_map["Combined"]})
+        fig_line = px.line(plot_df, labels={"value": "Index (Base 100)", "index": "Date"})
 
-    st.dataframe(df.sort_values("Value (INR)", ascending=False), use_container_width=True)
+    fig_line.update_layout(legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1))
+    st.plotly_chart(fig_line, use_container_width=True)
+
+    # Allocation & Table
+    col_left, col_right = st.columns([1, 1.2])
+    with col_left:
+        st.subheader("Asset Split")
+        fig_sun = px.sunburst(df, path=['Account', 'Sector', 'Symbol'], values='Value (INR)',
+                              color='Gain %', color_continuous_scale='RdYlGn', range_color=[-15, 15])
+        st.plotly_chart(fig_sun, use_container_width=True)
+
+    with col_right:
+        st.subheader("Holdings Details")
+        st.dataframe(df.sort_values("Value (INR)", ascending=False), use_container_width=True, hide_index=True)
 
 except Exception as e:
-    st.error(f"Syncing markets... {e}")
+    st.info("Generating historical performance reports...")
+    st.error(str(e))
