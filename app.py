@@ -21,17 +21,23 @@ st.title("👨‍👩‍👧‍👦 FamilyFolio Dashboard")
 @st.cache_data(ttl=600) # Cache data for 10 minutes
 def get_market_data():
     all_syms = list(set([h['sym'] for acc in PORTFOLIO_DATA.values() for h in acc]))
-    prices = yf.download(all_syms, period="1d")['Close'].iloc[-1]
+    
+    # We fetch '2d' to ensure we have the previous close if today is empty
+    data = yf.download(all_syms, period="2d", interval="1d")['Close']
+    
+    # Logic: Take the latest non-null price for every stock
+    # This fills the "Today" gap with "Yesterday's" price for closed markets
+    latest_prices = data.ffill().iloc[-1]
+    
     fx = yf.download(["USDINR=X", "GBPINR=X", "EURINR=X"], period="1d")['Close'].iloc[-1]
     rates = {"USD": fx["USDINR=X"], "GBP": fx["GBPINR=X"], "EUR": fx["EURINR=X"], "INR": 1.0}
-    return prices, rates
+    
+    return latest_prices, rates
 
 try:
     prices, rates = get_market_data()
-    
     selection = st.sidebar.selectbox("Select Account", ["Combined"] + list(PORTFOLIO_DATA.keys()))
     
-    # Process Rows
     rows = []
     for acc, holdings in PORTFOLIO_DATA.items():
         if selection == "Combined" or selection == acc:
@@ -39,7 +45,7 @@ try:
                 ltp = prices[h['sym']]
                 inr_rate = rates["GBP"] if h['cur'] == "GBP_PENCE" else rates[h['cur']]
                 
-                # Handling Pence Logic
+                # Correct Pence logic
                 cur_ltp = ltp/100 if h['cur'] == "GBP_PENCE" else ltp
                 
                 val_inr = h['qty'] * cur_ltp * inr_rate
@@ -54,11 +60,12 @@ try:
     
     df = pd.DataFrame(rows)
 
-    # --- 3. UI ---
+    # UI Metrics
     col1, col2 = st.columns(2)
     col1.metric("Total Value", f"₹{df['Value (INR)'].sum():,.0f}")
-    col2.metric("Total P&L", f"₹{df['P&L'].sum():,.0f}", f"{df['P&L'].sum()/df['Value (INR)'].sum()*100:.2f}%")
+    col2.metric("Total P&L", f"₹{df['P&L'].sum():,.0f}", f"{df['P&L'].sum()/(df['Value (INR)'].sum()-df['P&L'].sum())*100:.2f}%")
 
+    # Sunburst Chart
     fig = px.sunburst(df, path=['Account', 'Sector', 'Symbol'], values='Value (INR)',
                       color='Gain %', color_continuous_scale='RdYlGn', range_color=[-15, 15])
     st.plotly_chart(fig, use_container_width=True)
@@ -66,4 +73,4 @@ try:
     st.dataframe(df.sort_values("Value (INR)", ascending=False), use_container_width=True)
 
 except Exception as e:
-    st.error(f"Waiting for market data... {e}")
+    st.error(f"Syncing markets... {e}")
