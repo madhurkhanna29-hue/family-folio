@@ -18,7 +18,8 @@ PORTFOLIO_DATA = {
         {"sym": "NVDA", "qty": 131, "avg": 116.84, "cur": "USD", "sec": "Semis"}, 
         {"sym": "EQQQ.L", "qty": 4.0833, "avg": 349.71, "cur": "GBP_PENCE", "sec": "ETF"}, 
         {"sym": "GLEN.L", "qty": 1000, "avg": 5.222, "cur": "GBP_PENCE", "sec": "Commodities"},
-        {"sym": "XRP-GBP", "qty": 3020.187964, "avg": 1.821, "cur": "GBP", "sec": "Crypto"}
+        {"sym": "XRP-GBP", "qty": 3020.187964, "avg": 1.821, "cur": "GBP", "sec": "Crypto"},
+        {"sym": "ABSI", "qty": 1000, "avg": 5.5593, "cur": "USD", "sec": "Tech-Bio"} # Added New Moonshot
     ],
     "Sonakshi (acc3)": [{"sym": "AMD", "qty": 15, "avg": 231.70, "cur": "USD", "sec": "Semis"}, {"sym": "CRWV", "qty": 40, "avg": 98.62, "cur": "USD", "sec": "AI/Cloud"}, {"sym": "ISLN.L", "qty": 100, "avg": 54.442, "cur": "USD", "sec": "ETF"}, {"sym": "CIFR", "qty": 300, "avg": 20.05, "cur": "USD", "sec": "Crypto"}, {"sym": "RHM.DE", "qty": 3, "avg": 1736.00, "cur": "EUR", "sec": "Defence"}, {"sym": "MRVL", "qty": 90, "avg": 77.52, "cur": "USD", "sec": "Semis"}, {"sym": "AMZN", "qty": 50, "avg": 185.13, "cur": "USD", "sec": "E-Comm"}, {"sym": "IONQ", "qty": 310, "avg": 40.26, "cur": "USD", "sec": "Quantum"}],
     "Mother-in-law (acc4)": [{"sym": "SOUTHWEST.NS", "qty": 445, "avg": 147.38, "cur": "INR", "sec": "Energy"}, {"sym": "BRPL.BO", "qty": 650, "avg": 122.50, "cur": "INR", "sec": "Industrials"}, {"sym": "ORIENTCER.NS", "qty": 1750, "avg": 43.99, "cur": "INR", "sec": "Materials"}, {"sym": "AARVI.NS", "qty": 480, "avg": 132.50, "cur": "INR", "sec": "Industrials"}, {"sym": "ARIES.NS", "qty": 150, "avg": 322.14, "cur": "INR", "sec": "Agriculture"}, {"sym": "NAHARPOLY.NS", "qty": 200, "avg": 274.14, "cur": "INR", "sec": "Materials"}, {"sym": "ALUFLUOR.BO", "qty": 115, "avg": 479.78, "cur": "INR", "sec": "Chemicals"}, {"sym": "FLUIDOM.BO", "qty": 60, "avg": 854.79, "cur": "INR", "sec": "Industrials"}, {"sym": "RUBFILA.BO", "qty": 600, "avg": 79.89, "cur": "INR", "sec": "Materials"}, {"sym": "KAMDHENU.NS", "qty": 1825, "avg": 27.67, "cur": "INR", "sec": "Materials"}, {"sym": "SARLAPOLY.NS", "qty": 475, "avg": 104.00, "cur": "INR", "sec": "Textiles"}, {"sym": "AEL.BO", "qty": 270, "avg": 177.52, "cur": "INR", "sec": "Industrials"}, {"sym": "AJANTSOY.BO", "qty": 1500, "avg": 34.25, "cur": "INR", "sec": "Agriculture"}, {"sym": "GROBTEA.NS", "qty": 40, "avg": 1135.42, "cur": "INR", "sec": "FMCG"}],
@@ -36,23 +37,11 @@ cur_symbols = {"INR": "₹", "USD": "$", "GBP": "£"}
 def get_pro_data(tf):
     all_syms = list(set([h['sym'] for acc in PORTFOLIO_DATA.values() for h in acc]))
     fx_tickers = ["USDINR=X", "GBPINR=X", "EURINR=X"]
-    
-    # We fetch 5 days of data for everything to ensure we have a fallback if today is blank
     full_hist = yf.download(all_syms + fx_tickers, period="5d", interval="1d")['Close']
-    
-    # 1. Separate Stock/Crypto Data
     stock_hist = full_hist[all_syms].ffill().bfill()
-    
-    # 2. Extract Latest FX Rates specifically using forward fill
     latest_fx = full_hist[fx_tickers].ffill().iloc[-1]
-    rates = {
-        "USD": latest_fx["USDINR=X"], 
-        "GBP": latest_fx["GBPINR=X"], 
-        "EUR": latest_fx["EURINR=X"], 
-        "INR": 1.0
-    }
+    rates = {"USD": latest_fx["USDINR=X"], "GBP": latest_fx["GBPINR=X"], "EUR": latest_fx["EURINR=X"], "INR": 1.0}
     
-    # 3. Performance Trend Data (Based on user selected timeframe)
     if tf == "YTD":
         start_date = f"{datetime.now().year}-01-01"
         trend_hist = yf.download(all_syms, start=start_date)['Close']
@@ -65,7 +54,6 @@ try:
     prices_df, trend_hist, rates = get_pro_data(timeframe)
     latest_prices = prices_df.iloc[-1]
     prev_prices = prices_df.iloc[-2]
-    
     conversion_factor = 1 / rates[display_currency]
     rows, performance_map = [], {}
 
@@ -74,8 +62,6 @@ try:
         for h in holdings:
             cur_code = h['cur'].replace("_PENCE", "")
             inr_rate = rates[cur_code]
-            
-            # Trend calculation
             p_series = trend_hist[h['sym']]
             if h['cur'] == "GBP_PENCE": p_series = p_series / 100
             acc_daily_val_inr += (p_series * h['qty'] * inr_rate)
@@ -83,10 +69,8 @@ try:
             if selection == "Combined" or selection == acc_name:
                 ltp = latest_prices[h['sym']]
                 prev = prev_prices[h['sym']]
-                
                 ltp_adj = ltp/100 if h['cur'] == "GBP_PENCE" else ltp
                 prev_adj = prev/100 if h['cur'] == "GBP_PENCE" else prev
-                
                 val_display = (h['qty'] * ltp_adj * inr_rate) * conversion_factor
                 inv_display = (h['qty'] * h['avg'] * inr_rate) * conversion_factor
                 day_pnl = ((ltp_adj - prev_adj) * h['qty'] * inr_rate) * conversion_factor
@@ -109,10 +93,8 @@ try:
     m1, m2, m3 = st.columns(3)
     total_val = df[f'Value ({display_currency})'].sum()
     m1.metric(f"Value ({display_currency})", f"{sym}{total_val:,.0f}")
-    
     total_pnl = df["Total P&L"].sum()
     m2.metric("Unrealized P&L", f"{sym}{total_pnl:,.0f}", f"{(total_pnl/(total_val - total_pnl)*100):.2f}%")
-    
     d_pnl = df[f"Day P&L ({display_currency})"].sum()
     m3.metric("Day's P&L", f"{sym}{d_pnl:,.0f}", f"{(d_pnl/total_val*100):.2f}%")
 
@@ -131,6 +113,3 @@ try:
 
 except Exception as e:
     st.error(f"Market Syncing... Please refresh in 5 seconds. Error: {e}")
-
-except Exception as e:
-    st.error(f"Syncing market data... {e}")
